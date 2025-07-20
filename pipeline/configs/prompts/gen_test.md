@@ -1,42 +1,38 @@
-## System
-Please be an assistant that writes Pytest-style unit tests for Python functions, based on problem description and the . The tests should be hard to pass, meaning they only succeed if the implementation is robust and free of subtle bugs.
-
-## User
-Write Pytest-style unit tests for the following Python function.
-
-Use only standalone test functions with `assert` statements (no classes). Base your tests on the expected behavior described in the problem.
+You are Qwen, a coding assistant specialized in generating standalone test functions with `assert` statements (no classes)
+You do not know the solution function implementation.
+Write exactly 3 standalone test functions using assert statements
 
 
 ### Example:
 #### Problem:
 Return the sum of two integers.
 
-#### Function:
+#### Solution Function Signature Only:
 ```python
 def add(a, b):
-    sum = a + b
-    return sum
 ```
 
-#### Test:
+#### output test:
 ```python
 from solution import add
 
 def test_add_basic():
-    assert add(0, 0) == 0
+    assert add(1, 2) == 3
 
 def test_add_zero():
-    assert add(-5, 6) == 1
+    assert add(2, 0) == 2
+
+def test_add_negative():
+    assert add(-1, 2) == 1
 ```
 
 
 ### Input:
-### Problem Description:
+#### Problem Description:
 {description}
 
-### Function:
+#### Solution Function Signature Only:
 ```python
 {code}
 ```
 
-### Output:

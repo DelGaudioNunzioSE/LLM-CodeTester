@@ -15,7 +15,7 @@
       "Assistant",
       "assistant"
     ],
-    "pre_query_template": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant. You are designed to provide helpful, step-by-step guidance on coding problems. The user will ask you a wide range of coding questions.\nYour purpose is to assist users in understanding coding concepts, working through code, and arriving at the correct solutions.<|im_end|>\n<|im_start|>user\n"
+    "pre_query_template": "<|im_start|>system\nYou are Qwen, a coding assistant specialized in generating standalone test functions with `assert` statements (no classes).<|im_end|>\n<|im_start|>user\n"
   },
   "Qwen/Qwen2.5-7B-Instruct": {
     "model_name": "Qwen/Qwen2.5-7B-Instruct",
@@ -33,7 +33,7 @@
       "Assistant",
       "assistant"
     ],
-    "pre_query_template": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+    "pre_query_template": "<|im_start|>system\nYou are Qwen, a coding assistant specialized in generating standalone test functions with `assert` statements (no classes).<|im_end|>\n<|im_start|>user\n"
   },
   "Qwen/Qwen2.5-14B-Instruct": {
     "model_name": "Qwen/Qwen2.5-14B-Instruct",
@@ -51,7 +51,7 @@
       "Assistant",
       "assistant"
     ],
-    "pre_query_template": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+    "pre_query_template": "<|im_start|>system\nYou are Qwen, a coding assistant specialized in generating standalone test functions with `assert` statements (no classes).<|im_end|>\n<|im_start|>user\n"
   },
   "Qwen/Qwen2.5-32B-Instruct": {
     "model_name": "Qwen/Qwen2.5-32B-Instruct",
@@ -69,7 +69,7 @@
       "Assistant",
       "assistant"
     ],
-    "pre_query_template": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+    "pre_query_template": "<|im_start|>system\nYou are Qwen, a coding assistant specialized in generating standalone test functions with `assert` statements (no classes).<|im_end|>\n<|im_start|>user\n"
   },
   "Qwen/Qwen2.5-Coder-32B-Instruct": {
     "model_name": "Qwen/Qwen2.5-Coder-32B-Instruct",

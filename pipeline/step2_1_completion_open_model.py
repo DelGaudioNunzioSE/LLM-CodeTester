@@ -1,6 +1,6 @@
 import torch
 import os
-import sys
+import re
 import argparse
 import copy
 import json
@@ -91,8 +91,19 @@ class Model:
 
     def print_config(self):
         """
-        TODO
+        Print the model configuration.
         """
+        print(f"Model Nickname: {self.model_nickname}")
+        print(f"Quantization: {self.quantization}")
+        print(f"Dtype: {self.dtype}")
+        print(f"Tensor Parallel Size: {self.tensor_parallel_size}")
+        print(f"GPU Memory Utilization: {self.gpu_memory_utilization}")
+        print(f"Max Tokens: {self.max_tokens}")
+        print(f"Max Model Length: {self.max_model_len}")
+        print(f"Temperature: {self.temperature}")
+        print(f"Top P: {self.top_p}")
+        print(f"Repetition Penalty: {self.repetition_penalty}")
+        print(f"Model Config Path: {self.model_config_path}")
 
         
 
@@ -100,11 +111,11 @@ class Model:
 
 class TestGenerationManager:
     def __init__(self,batch_size=128,checkpoint_every=20, 
-                 model_nickname="Qwen/Qwen2.5-Coder-7B-Instruct",
+                 model_nickname="Qwen/Qwen2.5-14B-Instruct",
                  quantization="8bit", api_url=None, api_key=None,
                  device="0",dtype="float16", tensor_parallel_size=1, gpu_memory_utilization=0.95,  max_tokens=8192,
-                 max_model_len=8192, temperature=1.0, top_p=1.0, repetition_penalty=1.0, 
-                 num_trials=1, model_config_path="configs/model_configs.json"):
+                 max_model_len=4000, temperature=1.0, top_p=1.0, repetition_penalty=1.0, 
+                 num_trials=1, model_config_path="configs/model_configs.json", debug=False):
         '''
         batch_size: Number of samples per batch (default: 128)
         checkpoint_every: Save checkpoint every n batches
@@ -118,7 +129,7 @@ class TestGenerationManager:
         tensor_parallel_size: Number of GPUs to use for tensor parallelism. Only used for Llama 70B models.
         gpu_memory_utilization: GPU memory utilization (default: 0.95) 
         max_tokens: Maximum number of tokens to generate (default: 8192)
-        max_model_len: Maximum model length (default: 8192)
+        max_model_len: Maximum model length (default: 4000)
         temperature: Temperature for generation (default: 1.0)
         top_p: Top-p sampling for generation (default: 1.0)
         repetition_penalty: Repetition penalty for generation (default: 1.0)
@@ -142,6 +153,7 @@ class TestGenerationManager:
         #repetition_penalty <-saved in model object
         self.num_trials = num_trials
         #model_config_path <-saved in model object
+        self.debug = debug
 
         
         valid_dtypes = ["float16", "bfloat16"]
@@ -179,6 +191,9 @@ class TestGenerationManager:
             stop_token_ids=temp_stop_token_ids
         )
 
+        if self.debug:
+            self.model.print_config()
+
 
 
     def prompt_elaboration(self,problem_def ,code,prompt_path):
@@ -193,8 +208,7 @@ class TestGenerationManager:
     def process_batch(self, batch, llm, params, 
                       problem_def_column, code_column,
                       prompt_path,
-                      tokenizer=None, 
-                      debug=False):
+                      tokenizer=None):
         '''
         Process a batch of data using local vllm engine or Hugging Face engine.
         batch: List of messages to process (instructions and code)
@@ -207,7 +221,13 @@ class TestGenerationManager:
         '''
         # obtain problem definition
         problems_definitions = [item['messages'][0][problem_def_column] for item in batch] 
-        codes= [item['messages'][0][code_column] for item in batch]
+        codes_raw = [item['messages'][0][code_column] for item in batch]
+        codes = [
+            re.search(r"def\s+[^\n]+", code).group(0)
+            if re.search(r"def\s+[^\n]+", code)
+            else code.splitlines()[0]
+            for code in codes_raw
+        ]
         local_prompts = []
         for problem_def,code in zip(problems_definitions, codes):
             PROMPT = self.prompt_elaboration(problem_def=problem_def, code=code, prompt_path=prompt_path)
@@ -215,7 +235,7 @@ class TestGenerationManager:
             template = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
             local_prompts.append(template)
 
-            if debug:
+            if self.debug:
                 print(f" template: {template}")
                 print(f"\n-------------------------------------------------------\n\n")
 

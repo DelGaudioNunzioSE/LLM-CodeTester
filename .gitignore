@@ -220,4 +220,11 @@ pipeline/docker-compose.yml
 
 
 #### my GIT IGNORE
-Dataset/*
+Dataset/Dataset/*
+Dataset/DatasetJSON/*
+!Dataset/DatasetTEST/
+Dataset/DatasetTEST/*
+!Dataset/DatasetTEST/checkpoints/
+Dataset/DatasetTEST/checkpoints/*
+Dataset/DatasetTESTGEN/*
+Dataset/DatasetTESTGENOUTPUT/*

@@ -15,7 +15,7 @@ from pathlib import Path
 
 class GenUnitTest():
     def __init__(self):
-        None
+        self.no_test_indexes = []
 
 
 
@@ -24,6 +24,7 @@ class GenUnitTest():
 
         input_path = input_path
         oritigal_output_path = output_path
+        self.no_test_indexes = []
 
         
     
@@ -59,45 +60,48 @@ class GenUnitTest():
 
                     # Extract test code from assistant message
                 assistant_message = assistant_message["content"]
-                TEST = re.search(r'<\|Test Begin\|>(.*?)<\|Test End\|>', assistant_message, re.DOTALL)
+                TEST = re.search(r'```python(.*?)```', assistant_message, re.DOTALL)
 
-                if  TEST:
+                if not TEST:
+                    print(f"No test code found in assistant message for index {idx}")
+                    self.no_test_indexes.append(idx)
+                    continue
 
-                    TEST_CODE = TEST.group(1).strip().replace('```python\n', '').replace('```', '').strip()
+                TEST_CODE = TEST.group(1).strip().replace('```python\n', '').replace('```', '').strip()
 
-                    # Write solution.py
-                    with open(os.path.join(output_path, "solution.py"), "w", encoding="utf-8") as f:
-                        f.write(CODE)
+                # Write solution.py
+                with open(os.path.join(output_path, "solution.py"), "w", encoding="utf-8") as f:
+                    f.write(CODE)
 
-                    # Write test_solution.py  
-                    with open(os.path.join(output_path, "test_solution.py"), "w", encoding="utf-8") as f:
-                        f.write(f"from solution import *\n\n" + TEST_CODE)
+                # Write test_solution.py  
+                with open(os.path.join(output_path, "test_solution.py"), "w", encoding="utf-8") as f:
+                    f.write(f"from solution import *\n\n" + TEST_CODE)
 
-                    # Copy run_test.bat
-                    with open(bat_path, "r") as src:
-                        with open(os.path.join(output_path, "run_test.bat"), "w", encoding="utf-8") as dst:
-                            dst.write(src.read())
+                # Copy run_test.bat
+                with open(bat_path, "r") as src:
+                    with open(os.path.join(output_path, "run_test.bat"), "w", encoding="utf-8") as dst:
+                        dst.write(src.read())
 
-                    with open(sh_path, "r", encoding="utf-8") as src:
-                        with open(os.path.join(output_path, "run_test.sh"), "w", encoding="utf-8") as dst:
-                            dst.write(src.read())
+                with open(sh_path, "r", encoding="utf-8") as src:
+                    with open(os.path.join(output_path, "run_test.sh"), "w", encoding="utf-8") as dst:
+                        dst.write(src.read())
 
                                 
-                    # Make run_test.sh executable
-                    #os.chmod(os.path.join(output_path, "run_test.bat"), 0o755)
+                # Make run_test.sh executable
+                #os.chmod(os.path.join(output_path, "run_test.bat"), 0o755)
 
-                    # Save processed data as JSON
-                    processed_data = {
-                        "metadata": code_data["metadata"],
-                        "instruction": PROBLEM,
-                        "solution_code": CODE,
-                        "test_code": TEST_CODE,
-                        "file_source": input_path
-                    }
-                    if "gen_response_configs" in code_data:
-                        processed_data["gen_response_configs"] = code_data["gen_response_configs"]
-                    with open(os.path.join(output_path, "data.json"), "w") as f:
-                        json.dump(processed_data, f, indent=2)
+                # Save processed data as JSON
+                processed_data = {
+                    "metadata": code_data["metadata"],
+                    "instruction": PROBLEM,
+                    "solution_code": CODE,
+                    "test_code": TEST_CODE,
+                    "file_source": input_path
+                }
+                if "gen_response_configs" in code_data:
+                    processed_data["gen_response_configs"] = code_data["gen_response_configs"]
+                with open(os.path.join(output_path, "data.json"), "w") as f:
+                    json.dump(processed_data, f, indent=2)
 
 
 
@@ -105,6 +109,8 @@ class GenUnitTest():
                 Ppath = os.path.join(oritigal_output_path, str(idx))
                 if os.path.exists(Ppath) and not os.listdir(Ppath):
                     os.rmdir(Ppath)
+
+        print(f"number of indexes without test code: {len(self.no_test_indexes)}")
 
 
 

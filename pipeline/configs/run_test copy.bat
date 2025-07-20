@@ -1,6 +1,4 @@
 @echo off
-setlocal ENABLEDELAYEDEXPANSION
-
 REM === Initial configuration ===
 set LOG_FILE=test_log.log
 set RESULT_FILE=test_result.txt
@@ -10,30 +8,27 @@ if exist __pycache__ rmdir /s /q __pycache__
 if exist .pytest_cache rmdir /s /q .pytest_cache
 if exist .coverage del .coverage
 
-REM === Run tests ===
+REM === Start tests using PowerShell ===
 powershell -Command "Start-Process cmd -ArgumentList '/c python -m pytest --rootdir=. --cov=solution --cov-report term > %LOG_FILE% 2>&1' -NoNewWindow -Wait"
 
-REM === Wait a moment ===
+REM === Wait for log file to be written ===
 timeout /t 2 >nul
 
-REM === Initialize variable ===
-set PASSED=0
-
-REM === Extract number of passed tests ===
-for /f "tokens=* delims=" %%L in ('findstr /R /C:"[0-9]\+ passed" %LOG_FILE%') do (
-    for %%W in (%%L) do (
-        for /f "tokens=1" %%P in ("%%W") do (
-            set PASSED=%%P
-        )
-    )
+REM === Check test result from log ===
+findstr /C:"= FAILURES =" %LOG_FILE% >nul
+if %errorlevel%==0 (
+    echo Some tests failed. Check the output for details.
+    echo Fail > %RESULT_FILE%
+    set EXIT_CODE=1
+) else (
+    echo Tests completed successfully.
+    echo Pass > %RESULT_FILE%
+    set EXIT_CODE=0
 )
 
-REM === Write Pass line ===
-echo Pass: !PASSED! > %RESULT_FILE%
-
-REM === Extract and write coverage ===
+REM === Extract coverage from the log ===
 for /f "tokens=4" %%a in ('findstr /C:"TOTAL" %LOG_FILE%') do (
     echo Coverage: %%a >> %RESULT_FILE%
 )
 
-exit /b 0
+exit /b %EXIT_CODE%
