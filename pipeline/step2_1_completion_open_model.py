@@ -4,8 +4,6 @@ import re
 import argparse
 import copy
 import json
-import requests
-import concurrent.futures
 from time import sleep, time
 from tqdm import tqdm
 from pipeline.utils import load_dataset_from_file, save_dataset, make_api_request_with_retry
@@ -16,11 +14,9 @@ except ImportError:
     VLLM_AVAILABLE = False
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-import glob
 
-################
-# Configurations
-################
+################################################
+
 
 class Model:
     """
@@ -108,14 +104,15 @@ class Model:
         
 
 
-
+################################################################################
 class TestGenerationManager:
     def __init__(self,batch_size=128,checkpoint_every=20, 
                  model_nickname="Qwen/Qwen2.5-14B-Instruct",
                  quantization="8bit", api_url=None, api_key=None,
-                 device="0",dtype="float16", tensor_parallel_size=1, gpu_memory_utilization=0.95,  max_tokens=8192,
-                 max_model_len=4000, temperature=1.0, top_p=1.0, repetition_penalty=1.0, 
-                 num_trials=1, model_config_path="configs/model_configs.json", debug=False):
+                 device="0",dtype="float16", tensor_parallel_size=1, gpu_memory_utilization=0.95,  max_tokens=8000,
+                 max_model_len=8000, temperature=1.0, top_p=1.0, repetition_penalty=1.0, 
+                 num_trials=1, model_config_path="configs/model_configs.json", debug=False
+                 ):
         '''
         batch_size: Number of samples per batch (default: 128)
         checkpoint_every: Save checkpoint every n batches
@@ -128,8 +125,8 @@ class TestGenerationManager:
         dtype: Data type for the model (default: "bfloat16")
         tensor_parallel_size: Number of GPUs to use for tensor parallelism. Only used for Llama 70B models.
         gpu_memory_utilization: GPU memory utilization (default: 0.95) 
-        max_tokens: Maximum number of tokens to generate (default: 8192)
-        max_model_len: Maximum model length (default: 4000)
+        max_tokens: Maximum number of tokens to generate (default: 8000)
+        max_model_len: Maximum model length (default: 8000)
         temperature: Temperature for generation (default: 1.0)
         top_p: Top-p sampling for generation (default: 1.0)
         repetition_penalty: Repetition penalty for generation (default: 1.0)
@@ -154,6 +151,7 @@ class TestGenerationManager:
         self.num_trials = num_trials
         #model_config_path <-saved in model object
         self.debug = debug
+        valid_purpose = ["gen_inputs", "gen_tests"]
 
         
         valid_dtypes = ["float16", "bfloat16"]
@@ -193,12 +191,16 @@ class TestGenerationManager:
 
         if self.debug:
             self.model.print_config()
+            
 
 
 
-    def prompt_elaboration(self,problem_def ,code,prompt_path):
+    def prompt_elaboration(self,problem_def ,code,prompt_path, code2=None):
         with open(prompt_path, encoding="utf-8") as f:
             prompt_template = f.read()
+
+        if code2:
+            prompt_template = prompt_template.replace("{code2}", code2)
 
         return prompt_template.replace("{description}", problem_def).replace("{code}", code)
 
@@ -206,7 +208,7 @@ class TestGenerationManager:
 
     # Process a batch of data using local vllm engine
     def process_batch(self, batch, llm, params, 
-                      problem_def_column, code_column,
+                      problem_def_column, code_column, 
                       prompt_path,
                       tokenizer=None):
         '''
@@ -221,16 +223,11 @@ class TestGenerationManager:
         '''
         # obtain problem definition
         problems_definitions = [item['messages'][0][problem_def_column] for item in batch] 
-        codes_raw = [item['messages'][0][code_column] for item in batch]
-        codes = [
-            re.search(r"def\s+[^\n]+", code).group(0)
-            if re.search(r"def\s+[^\n]+", code)
-            else code.splitlines()[0]
-            for code in codes_raw
-        ]
         local_prompts = []
-        for problem_def,code in zip(problems_definitions, codes):
-            PROMPT = self.prompt_elaboration(problem_def=problem_def, code=code, prompt_path=prompt_path)
+        codes = [item['messages'][0][code_column] for item in batch]
+        
+        for problem_def,code,code2 in zip(problems_definitions, codes):
+            PROMPT = self.prompt_elaboration(problem_def=problem_def, code=code, prompt_path=prompt_path ,code2=code2)
             chat = [{"role": "user", "content": PROMPT}] 
             template = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
             local_prompts.append(template)

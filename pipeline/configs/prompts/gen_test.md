@@ -1,6 +1,6 @@
-You are Qwen, a coding assistant specialized in generating standalone test functions with `assert` statements (no classes)
+I need a coding assistant specialized in generating standalone test functions with `assert` statements (no classes)
 You do not know the solution function implementation.
-Write exactly 3 standalone test functions using assert statements
+Please write exactly 3 standalone test functions.
 
 
 ### Example:
