@@ -11,6 +11,8 @@ from pathlib import Path
 ################
 # Configurations
 ################
+TEST_ASSERT = "assert"
+
 
 
 class GenUnitTest():
@@ -25,6 +27,7 @@ class GenUnitTest():
         input_path = input_path
         oritigal_output_path = output_path
         self.no_test_indexes = []
+        decreaser_index = 1
 
         
     
@@ -36,14 +39,6 @@ class GenUnitTest():
             for idx, line in enumerate(tqdm(f,total=TOTAL)): # loading bar
 
 
-                # generate foulder 
-                output_path=os.path.join(oritigal_output_path, str(idx))
-                if os.path.exists(output_path):
-                    shutil.rmtree(output_path)  # elimina cartella e contenuto
-                os.makedirs(output_path, exist_ok=True)
-                
-
-
                 code_data = json.loads(line)
                 # Get the assistant message content as the instruction
                 user_message = next((msg for msg in code_data["messages"] if msg[role] == "user"), None)
@@ -53,7 +48,9 @@ class GenUnitTest():
                 
                 if user_message is None:
                     raise ValueError("No user message found in seed data")        
+                
                 if assistant_message is None:
+                    decreaser_index -= 1
                     print("No assistant message found in seed data")
                     continue
 
@@ -61,29 +58,38 @@ class GenUnitTest():
                     # Extract test code from assistant message
                 assistant_message = assistant_message["content"]
                 TEST = re.search(r'```python(.*?)```', assistant_message, re.DOTALL)
+                TEST = TEST.group(1) if TEST else None
+                TEST = assistant_message
+                count = TEST.count(TEST_ASSERT) if TEST else 0
 
-                if not TEST:
-                    print(f"No test code found in assistant message for index {idx}")
-                    self.no_test_indexes.append(idx)
+                if count <3:
+                    decreaser_index -= 1
+                    self.no_test_indexes.append(idx+decreaser_index)
                     continue
 
-                TEST_CODE = TEST.group(1).strip().replace('```python\n', '').replace('```', '').strip()
 
-                # Write solution.py
-                with open(os.path.join(output_path, "solution.py"), "w", encoding="utf-8") as f:
-                    f.write(CODE)
+
+
+
+                # generate foulder 
+                output_path=os.path.join(oritigal_output_path, str(idx+decreaser_index))
+                if os.path.exists(output_path):
+                    shutil.rmtree(output_path)  # elimina cartella e contenuto
+                os.makedirs(output_path, exist_ok=True)
+
+                TEST_CODE = TEST.strip().replace('```python\n', '').replace('```', '').strip()
+
+
+                #with open(os.path.join(output_path, "solution.py"), "w", encoding="utf-8") as f:
+                #    f.write(CODE)
 
                 # Write test_solution.py  
                 with open(os.path.join(output_path, "test_solution.py"), "w", encoding="utf-8") as f:
-                    f.write(f"from solution import *\n\n" + TEST_CODE)
+                    f.write(TEST_CODE)
 
                 # Copy run_test.bat
                 with open(bat_path, "r") as src:
                     with open(os.path.join(output_path, "run_test.bat"), "w", encoding="utf-8") as dst:
-                        dst.write(src.read())
-
-                with open(sh_path, "r", encoding="utf-8") as src:
-                    with open(os.path.join(output_path, "run_test.sh"), "w", encoding="utf-8") as dst:
                         dst.write(src.read())
 
                                 
@@ -106,7 +112,7 @@ class GenUnitTest():
 
 
                 # double controll 
-                Ppath = os.path.join(oritigal_output_path, str(idx))
+                Ppath = os.path.join(oritigal_output_path, str(idx+decreaser_index))
                 if os.path.exists(Ppath) and not os.listdir(Ppath):
                     os.rmdir(Ppath)
 

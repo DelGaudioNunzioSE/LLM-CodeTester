@@ -19,12 +19,15 @@ timeout /t 2 >nul
 REM === Initialize variable ===
 set PASSED=0
 
-REM === Extract number of passed tests ===
-for /f "tokens=* delims=" %%L in ('findstr /R /C:"[0-9]\+ passed" %LOG_FILE%') do (
-    for %%W in (%%L) do (
-        for /f "tokens=1" %%P in ("%%W") do (
-            set PASSED=%%P
+REM === Extract number before 'passed' ===
+for /f "tokens=*" %%L in ('findstr /i "passed" %LOG_FILE%') do (
+    set "line=%%L"
+    set "prev="
+    for %%W in (!line!) do (
+        if "%%W"=="passed" (
+            set PASSED=!prev!
         )
+        set prev=%%W
     )
 )
 

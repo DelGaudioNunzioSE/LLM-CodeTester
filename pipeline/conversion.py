@@ -1,5 +1,6 @@
 import csv
 import json
+import random
 import re
 
 
@@ -33,7 +34,7 @@ class DatasetConverter():
         return text.strip()
     
 
-    def convert(self, input_path, output_path, problem_def_column,code_column,LLM_code_column):
+    def convert(self, input_path, output_path, problem_def_column,code_column,LLM_code_column, radomize=True):
         """
         Convert a CSV file to a JSONL file with specific columns and patterns removed.
         input_file: input_file: Path to the input CSV file.
@@ -47,6 +48,8 @@ class DatasetConverter():
             reader = csv.DictReader(file_csv)
             output_data = []
 
+
+            
             for row in reader:
 
                 # Extract the problem definition and code columns
@@ -77,6 +80,9 @@ class DatasetConverter():
                 }
                 output_data.append(elemento)
 
+        if radomize: 
+            random.shuffle(output_data)
+            
         with open(output_path, mode='w', encoding='utf-8') as file_json:
             for item in output_data:
                 json.dump(item, file_json, ensure_ascii=False)

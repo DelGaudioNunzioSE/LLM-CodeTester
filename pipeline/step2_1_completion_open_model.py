@@ -1,3 +1,5 @@
+import ast
+import textwrap
 import torch
 import os
 import re
@@ -14,7 +16,8 @@ except ImportError:
     VLLM_AVAILABLE = False
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-
+import jedi
+import builtins
 ################################################
 
 
@@ -107,10 +110,10 @@ class Model:
 ################################################################################
 class TestGenerationManager:
     def __init__(self,batch_size=128,checkpoint_every=20, 
-                 model_nickname="Qwen/Qwen2.5-14B-Instruct",
+                 model_nickname="Qwen/Qwen2.5-Coder-7B-Instruct",
                  quantization="8bit", api_url=None, api_key=None,
                  device="0",dtype="float16", tensor_parallel_size=1, gpu_memory_utilization=0.95,  max_tokens=8000,
-                 max_model_len=8000, temperature=1.0, top_p=1.0, repetition_penalty=1.0, 
+                 max_model_len=4000, temperature=1.0, top_p=1.0, repetition_penalty=1.0, 
                  num_trials=1, model_config_path="configs/model_configs.json", debug=False
                  ):
         '''
@@ -195,20 +198,83 @@ class TestGenerationManager:
 
 
 
-    def prompt_elaboration(self,problem_def ,code,prompt_path, code2=None):
+    def prompt_elaboration(self, problem_def, code1, code2, prompt_path):
         with open(prompt_path, encoding="utf-8") as f:
             prompt_template = f.read()
 
-        if code2:
-            prompt_template = prompt_template.replace("{code2}", code2)
+        return prompt_template.replace("{description}", problem_def).replace("{code1}", code1).replace("{code2}", code2)
 
-        return prompt_template.replace("{description}", problem_def).replace("{code}", code)
 
-        
+    def code_elaboration(self, code):
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as e:
+            print(f"[ERROR] Syntax error while parsing: {e}")
+            return code  # fallback
+
+        import_nodes = []
+        other_nodes = []
+
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                import_nodes.append(node)
+            else:
+                other_nodes.append(node)
+
+        # Convert AST back to code (Python 3.9+)
+        try:
+            import_code = "\n".join([ast.unparse(n) for n in import_nodes])
+            other_code = "\n".join([ast.unparse(n) for n in other_nodes])
+        except Exception as e:
+            print(f"[ERROR] Could not unparse AST: {e}")
+            return code  # fallback
+
+        return import_code.strip() + "\n\n" + other_code.strip()
+
+
+
+    def _suggest_imports(self, codes: list[str]) -> list[str]:
+        updated_codes = []
+        for code in codes:
+            updated_codes.append( f"from typing import *\nfrom collections import *\nfrom math import *\n{code}")
+        return updated_codes
+
+
+    def _rename_class(self, codes: list[str]) -> list[str]:
+        updated_codes = []
+        for code in codes:
+            if "class Solution:" in code:
+                code = code.replace("class Solution:", "class First_class:")
+            updated_codes.append(code)
+        return updated_codes
+
+    import ast
+
+    def _keep_only_functions_and_classes(self, codes: list[str]) -> list[str]:
+        updated_codes = []
+        for code in codes:
+            try:
+                # Parsing dell'albero sintattico
+                tree = ast.parse(code)
+
+                # Filtra solo FunctionDef e ClassDef
+                filtered_nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))]
+
+                # Ricostruisci un modulo solo con quelle definizioni
+                new_module = ast.Module(body=filtered_nodes, type_ignores=[])
+
+                # Ricostruisci il codice Python
+                updated_codes.append( ast.unparse(new_module) )
+
+            except Exception as e:
+                return f"# Errore durante la rimozione del codice fuori da funzioni/classi:\n# {e}"
+        return updated_codes
+            
+
 
     # Process a batch of data using local vllm engine
     def process_batch(self, batch, llm, params, 
-                      problem_def_column, code_column, 
+                      problem_def_column, code_column, code_column2, 
                       prompt_path,
                       tokenizer=None):
         '''
@@ -224,16 +290,29 @@ class TestGenerationManager:
         # obtain problem definition
         problems_definitions = [item['messages'][0][problem_def_column] for item in batch] 
         local_prompts = []
-        codes = [item['messages'][0][code_column] for item in batch]
+        codes1 = [item['messages'][0][code_column] for item in batch]
+        codes1 = self._rename_class(codes=codes1)  # Rename class Solution to First_class
+        codes2 = [item['messages'][0][code_column2] for item in batch]
+        codes1 = self._keep_only_functions_and_classes(codes1)
+        codes2 = self._keep_only_functions_and_classes(codes2)
+        #codes1=self._suggest_imports(codes=codes1)  # Suggest imports for code1
+        #codes2=self._suggest_imports(codes=codes2)  # Suggest imports for code2
         
-        for problem_def,code,code2 in zip(problems_definitions, codes):
-            PROMPT = self.prompt_elaboration(problem_def=problem_def, code=code, prompt_path=prompt_path ,code2=code2)
+        for problem_def, code1, code2 in zip(problems_definitions, codes1, codes2):
+            #code1 = self.code_elaboration(code1)
+            #code2 = self.code_elaboration(code2)
+            def1= re.search(r'def', code1)
+            def2= re.search(r'def', code2)
+            if code1 is None or code2 is None or def1 is None or def2 is None:
+                print("Code could not be parsed. Please check the code format.")
+                return batch
+            PROMPT = self.prompt_elaboration(problem_def=problem_def, code1=code1, code2=code2, prompt_path=prompt_path)
             chat = [{"role": "user", "content": PROMPT}] 
             template = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
             local_prompts.append(template)
 
             if self.debug:
-                print(f" template: {template}")
+                print(f" input:\n {template}")
                 print(f"\n-------------------------------------------------------\n\n")
 
 
@@ -253,8 +332,12 @@ class TestGenerationManager:
         # 4. Filtro i local_prompts in base a questi indici
         filtered_prompts = [local_prompts[i] for i in valid_indices]
 
+        if filtered_prompts == []:
+            print("[INFO] No valid prompts to process in this batch. Skipping...")
+            return batch
+        
         # 5. Tokenizzo solo i prompt validi
-        inputs = tokenizer(filtered_prompts, return_tensors="pt", padding=True, truncation=True).to(torch.cuda.current_device())
+        inputs = tokenizer(filtered_prompts, return_tensors="pt", padding=True, truncation=True).to(torch.cuda.current_device()) 
 
         gen_do_sample = False if self.model.temperature == 0 else True
         outputs = llm.generate(**inputs,
@@ -273,16 +356,34 @@ class TestGenerationManager:
                     outputs[i] = completion[:completion.index(stop_token)]
 
         batch = [batch[i] for i in valid_indices]
+
+
         # generrate/modificate field messages in batch
         for i, item in enumerate(batch):
             message = item["messages"]
-            response = outputs[i].strip()
+            #response = codes1[i] + codes2[i] + outputs[i].strip()
+            outputs[i] = re.search(r'```python(.*?)```', outputs[i].strip(), re.DOTALL).group(1)
+
+            codes1=self._suggest_imports(codes=codes1)  # Suggest imports for code1
+            
+            response = "\n\n".join([
+                textwrap.dedent(codes1[i]).strip(),
+                textwrap.dedent(codes2[i]).strip(),
+                textwrap.dedent(outputs[i]).strip()
+            ])
+
+            response = self.code_elaboration(response)   
+            
             item['messages'] =  message+ [
                     {   
                         "role": "assistant",
                         "content": response
                     }
                 ]
+            
+            if self.debug:
+                print(f"Response for item {i}:\n{response}")
+                print(f"\n-------------------------------------------------------\n\n")
             
         return batch
 
@@ -299,7 +400,7 @@ class TestGenerationManager:
 
     # Generate outputs, update dataset in batches, and overwrite checkpoint
     def generate_and_update(self, dataset, checkpoint_path, problem_def_column,
-                            code_column, prompt_path, llm=None, params=None, tokenizer=None):
+                            code_column,code_column2, prompt_path, llm=None, params=None, tokenizer=None):
         '''
         Generate outputs for the dataset in batches and update the dataset.
         dataset: List of dictionaries containing code and instructions
@@ -347,7 +448,7 @@ class TestGenerationManager:
             end_idx = min((i + 1) * self.batch_size + last_checkpoint_idx, len(processed_dataset))
             batch = processed_dataset[start_idx:end_idx]
             batch = self.process_batch(batch=batch, llm=llm, params=params, prompt_path=prompt_path, tokenizer=tokenizer,
-                                       problem_def_column=problem_def_column, code_column=code_column)
+                                       problem_def_column=problem_def_column, code_column=code_column, code_column2=code_column2)
             
             processed_dataset[start_idx:end_idx] = batch
             # Overwrite the same checkpoint file after serveral batches
@@ -361,7 +462,7 @@ class TestGenerationManager:
 
     # Main function to control workflow
     def run(self,input_path,output_path,checkpoint_path,prompt_path,
-            probelm_def_column, code_column):
+            probelm_def_column, code_column, code_column2):
 
         # Setting ingput and output paths
                 # Create different output folders for different trials
@@ -369,8 +470,8 @@ class TestGenerationManager:
             checkpoint_files = [f"{checkpoint_path}_results_checkpoint{i}.jsonl" for i in range(self.num_trials)]
             saved_files = [f"{output_path}_results{i}.jsonl" for i in range(self.num_trials)]
         else:
-            checkpoint_file = f"{checkpoint_path}_results_checkpoint.jsonl"
-            saved_file = f"{output_path}_results.jsonl"
+            checkpoint_file = f"{checkpoint_path}"
+            saved_file = f"{output_path}"
 
 
         # Load instructions from the input file
@@ -398,7 +499,7 @@ class TestGenerationManager:
         if self.num_trials == 1:
             updated_dataset = self.generate_and_update(dataset=dataset, checkpoint_path=checkpoint_file, 
                                                        llm=llm, params=params, prompt_path=prompt_path, tokenizer=tokenizer,
-                                                       problem_def_column=probelm_def_column, code_column=code_column)
+                                                       problem_def_column=probelm_def_column, code_column=code_column, code_column2=code_column2)
             save_dataset(updated_dataset, saved_file, convert_to_jsonl=True)
 
             # Optionally remove the checkpoint file after completion
@@ -408,7 +509,7 @@ class TestGenerationManager:
             for i in range(self.num_trials):
                 updated_dataset = self.generate_and_update(dataset=dataset, checkpoint_path=checkpoint_files[i], 
                                                            llm=llm, params=params, prompt_path= prompt_path, tokenizer=tokenizer,
-                                                           problem_def_column=probelm_def_column, code_column=code_column)
+                                                           problem_def_column=probelm_def_column, code_column=code_colum, code_column2=code_column2)
                 save_dataset(updated_dataset, saved_files[i], convert_to_jsonl=True)
 
                 # Optionally remove the checkpoint file after completion
