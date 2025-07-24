@@ -64,7 +64,7 @@ class DatasetConverter():
                 text_LLM_code_column = self._clear_texts(text=text_LLM_code_column, patterns=self.code_patterns_to_remove)
 
                 # metadat are all columns except the problem definition and code columns
-                metadata = {k: v for k, v in row.items() if k != problem_def_column and k != code_column and k != text_LLM_code_column}
+                metadata = {k: v for k, v in row.items() if k != problem_def_column and k != code_column and k != LLM_code_column}
 
                 elemento = {
                     "messages": [

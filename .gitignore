@@ -228,3 +228,5 @@ Dataset/DatasetTEST/*
 Dataset/DatasetTEST/checkpoints/*
 Dataset/DatasetTESTGEN/*
 Dataset/DatasetTESTGENOUTPUT/*
+main_tester.py
+backup/

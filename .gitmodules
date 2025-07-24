@@ -1,3 +1,0 @@
-[submodule "trainer/rl"]
-	path = trainer/rl
-	url = https://github.com/KodCode-AI/code-r1

@@ -240,13 +240,30 @@ class TestGenerationManager:
         return updated_codes
 
 
+
+
     def _rename_class(self, codes: list[str]) -> list[str]:
         updated_codes = []
+        class_name_template = "{}_class"
+        class_prefixes = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth", "Tenth"]
+
         for code in codes:
-            if "class Solution:" in code:
-                code = code.replace("class Solution:", "class First_class:")
+            class_counter = 0
+
+            def replacer(match):
+                nonlocal class_counter
+                prefix = class_prefixes[class_counter] if class_counter < len(class_prefixes) else f"Class{class_counter+1}"
+                class_counter += 1
+                return f"class {class_name_template.format(prefix)}"
+
+            # Regex per trovare definizioni di classi
+            code = re.sub(r'class\s+(\w+)\s*:', replacer, code)
             updated_codes.append(code)
+
         return updated_codes
+    
+
+
 
     import ast
 
@@ -301,9 +318,9 @@ class TestGenerationManager:
         for problem_def, code1, code2 in zip(problems_definitions, codes1, codes2):
             #code1 = self.code_elaboration(code1)
             #code2 = self.code_elaboration(code2)
-            def1= re.search(r'def', code1)
-            def2= re.search(r'def', code2)
-            if code1 is None or code2 is None or def1 is None or def2 is None:
+            def1= 'def' in code1
+            def2= 'def' in code2
+            if code1 is None or code2 is None or def1 is False or def2 is False: 
                 print("Code could not be parsed. Please check the code format.")
                 return batch
             PROMPT = self.prompt_elaboration(problem_def=problem_def, code1=code1, code2=code2, prompt_path=prompt_path)
@@ -362,28 +379,29 @@ class TestGenerationManager:
         for i, item in enumerate(batch):
             message = item["messages"]
             #response = codes1[i] + codes2[i] + outputs[i].strip()
-            outputs[i] = re.search(r'```python(.*?)```', outputs[i].strip(), re.DOTALL).group(1)
+            if outputs[i] is not None:
+                outputs[i] = re.search(r'```python(.*?)```', outputs[i].strip(), re.DOTALL).group(1)
 
-            codes1=self._suggest_imports(codes=codes1)  # Suggest imports for code1
-            
-            response = "\n\n".join([
-                textwrap.dedent(codes1[i]).strip(),
-                textwrap.dedent(codes2[i]).strip(),
-                textwrap.dedent(outputs[i]).strip()
-            ])
+                codes1=self._suggest_imports(codes=codes1)  # Suggest imports for code1
+                
+                response = "\n\n".join([
+                    textwrap.dedent(codes1[i]).strip(),
+                    textwrap.dedent(codes2[i]).strip(),
+                    textwrap.dedent(outputs[i]).strip()
+                ])
 
-            response = self.code_elaboration(response)   
-            
-            item['messages'] =  message+ [
-                    {   
-                        "role": "assistant",
-                        "content": response
-                    }
-                ]
-            
-            if self.debug:
-                print(f"Response for item {i}:\n{response}")
-                print(f"\n-------------------------------------------------------\n\n")
+                response = self.code_elaboration(response)   
+                
+                item['messages'] =  message+ [ # cange the messages field of the batch
+                        {   
+                            "role": "assistant",
+                            "content": response
+                        }
+                    ]
+                
+                if self.debug:
+                    print(f"Response for item {i}:\n{response}")
+                    print(f"\n-------------------------------------------------------\n\n")
             
         return batch
 
