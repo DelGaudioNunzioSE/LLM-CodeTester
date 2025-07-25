@@ -51,7 +51,7 @@ class UnitTest():
                 
                 if assistant_message is None:
                     decreaser_index -= 1
-                    self.no_test_indexes += 1
+                    self.no_test_indexes.append(idx+decreaser_index)
                     continue
 
 
@@ -188,9 +188,9 @@ class UnitTest():
                     timeout=timeout_seconds
                 )
             if process.returncode == 0:
-                return f"[✓] Test OK in {folder_name}"
+                return f"[✓] in {folder_name}"
             else:
-                return f"[✗] Test FAULT in {folder_name}"
+                return f"[✗] in {folder_name}"
         except subprocess.TimeoutExpired:
             with open(result_file, "w") as f:
                 f.write(f"[TIMEOUT] of {timeout_seconds} seconds.\n")
@@ -205,14 +205,14 @@ class UnitTest():
             if os.path.isdir(os.path.join(base_dir, f)) and f.isdigit()
         ], key=lambda x: int(os.path.basename(x)))
 
-        print(f"==> Start tests in {len(folders)} folders with {max_workers} thread\n")
+        print(f"Start tests in {len(folders)} folders with {max_workers} thread\n")
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(self.run_test, folder, timeout_seconds): folder
                 for folder in folders
             }
-            for future in as_completed(futures):
+            for future in tqdm(as_completed(futures), total=len(folders), desc="Running tests"):
                 print(future.result())
 
 
@@ -268,7 +268,7 @@ class UnitTest():
             if os.path.isdir(os.path.join(base_dir, f))
         ]
 
-        print(f"==> Aggiorno data.json in {len(folders)} cartelle...\n")
+        print(f"==> Starting update data.json in {len(folders)} folders...\n")
 
         for folder in folders:
             data_path = os.path.join(folder, "data.json")
@@ -288,47 +288,70 @@ class UnitTest():
 
                 data["test_result"] = result_data
 
+
+                # adding folder name to metadata
+                folder_name = os.path.basename(folder)
+                data["metadata"]["test_folder_name"] = folder_name
+
+
                 with open(data_path, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
 
-                print(f"[✓] Aggiornato data.json in {os.path.basename(folder)}")
+                print(f"[✓] updated data.json in {os.path.basename(folder)}")
 
             except Exception as e:
-                print(f"[!] Errore in {os.path.basename(folder)}: {e}")
+                print(f"[!] Error in {os.path.basename(folder)}: {e}")
 
 
 
 
-    def process_dataset(self, input_dir, output_path):
-        enriched_data = []
+
+    def collect_all_data_jsons(self, input_dir: str, output_path: str):
+        all_data = []
 
         for folder_name in os.listdir(input_dir):
             folder_path = os.path.join(input_dir, folder_name)
-            if os.path.isdir(folder_path):
-                try:
-                    data_path = os.path.join(folder_path, "data.json")
-                    test_result_path = os.path.join(folder_path, "test_result.txt")
+            data_path = os.path.join(folder_path, "data.json")
 
+            if os.path.isdir(folder_path) and os.path.isfile(data_path):
+                try:
                     with open(data_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-
-                    with open(test_result_path, 'r', encoding='utf-8') as f:
-                        test_result_txt = f.read()
-
-                    # ✅ Parsing test_result.txt in formato strutturato
-                    parsed_result = self._parse_test_output(test_result_txt)
-                    data["test_result"] = parsed_result
-
-                    enriched_data.append(data)
-
+                        all_data.append(data)
                 except Exception as e:
-                    print(f"Errore nella cartella {folder_name}: {e}")
+                    print(f"[!] Can't read {data_path}: {e}")
 
-        # ✅ Salvataggio finale
+        # ✅ Scrittura nel file JSONL
         try:
-            with open(output_path, 'w', encoding='utf-8') as f:
-                for item in enriched_data:
-                    f.write(json.dumps(item, ensure_ascii=False) + '\n')
-            print(f"\n✓ Dataset arricchito salvato in {output_path} ({len(enriched_data)} elementi)")
+            with open(output_path, 'w', encoding='utf-8') as f_out:
+                for item in all_data:
+                    f_out.write(json.dumps(item, ensure_ascii=False) + '\n')
+            print(f"\n[✓] File JSONL created: {output_path} ({len(all_data)} elements)")
         except Exception as e:
-            print(f"Errore nel salvataggio del file finale: {e}")
+            print(f"[!] Error in {output_path}: {e}")
+
+
+
+    def jsonl_to_dataframe(self, jsonl_path: str, csv_path: str = None) -> pd.DataFrame:
+        data = []
+        try:
+            with open(jsonl_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        data.append(json.loads(line))
+        except Exception as e:
+            print(f"[Errore] Impossibile leggere il file JSONL: {e}")
+            return pd.DataFrame() 
+
+        #  Appiattisce tutte le strutture annidate
+        df = pd.json_normalize(data)
+
+        if csv_path:
+            try:
+                df.to_csv(csv_path, index=False, encoding='utf-8')
+                print(f"[✓] CSV saved in: {csv_path}")
+            except Exception as e:
+                print(f"[!][Error] CSV: {e}")
+
+        return df
+

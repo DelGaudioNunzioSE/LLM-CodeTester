@@ -230,3 +230,7 @@ Dataset/DatasetTESTGEN/*
 Dataset/DatasetTESTGENOUTPUT/*
 main_tester.py
 backup/
+!readme.md
+*.csv
+*.jsonl
+*.txt
