@@ -289,6 +289,100 @@ class TestGenerationManager:
             
 
 
+
+    def procesprocess_batch_alternatives(self, batch, llm, params, 
+                      code_column, 
+                      prompt_path,
+                      tokenizer=None):
+        # obtain problem definition
+        local_prompts = []
+        codes1 = [item['messages'][0][code_column] for item in batch]
+        
+        for code1 in codes1:
+            if code1 is None: 
+                print("Code could not be parsed. Please check the code format.")
+                return batch
+            PROMPT = self.prompt_elaboration(problem_def=" ", code1=code1, code2=" ", prompt_path=prompt_path)
+            chat = [{"role": "user", "content": PROMPT}] 
+            template = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+            local_prompts.append(template)
+
+            if self.debug:
+                print(f" input:\n {template}")
+                print(f"\n-------------------------------------------------------\n\n")
+
+
+
+        # 1. Tokenizzo senza padding/troncamento per misurare la vera lunghezza
+        tokenized = tokenizer(local_prompts, padding=False, truncation=False, return_tensors=None)
+
+        # 2. Calcolo la lunghezza di ogni prompt in token
+        input_lengths = [len(x) for x in tokenized["input_ids"]]
+
+        # 3. Trovo gli indici validi
+        valid_indices = [i for i, l in enumerate(input_lengths) if l <= self.model.max_model_len]
+        invalid_indices = [i for i in range(len(local_prompts)) if i not in valid_indices]
+        if invalid_indices:
+            print(f"[INFO] Discarded {len(invalid_indices)} prompt too much long. batch idex: {invalid_indices}")
+
+        # 4. Filtro i local_prompts in base a questi indici
+        filtered_prompts = [local_prompts[i] for i in valid_indices]
+
+        if filtered_prompts == []:
+            print("[INFO] No valid prompts to process in this batch. Skipping...")
+            return batch
+        
+        # 5. Tokenizzo solo i prompt validi
+        inputs = tokenizer(filtered_prompts, return_tensors="pt", padding=True, truncation=True).to(torch.cuda.current_device()) 
+
+        gen_do_sample = False if self.model.temperature == 0 else True
+        outputs = llm.generate(**inputs,
+                tokenizer=tokenizer, 
+                do_sample=gen_do_sample, 
+                temperature=self.model.temperature if gen_do_sample else None, # To avoid temperature` (=0) has to be a strictly positive float
+                top_p=self.model.top_p,
+                repetition_penalty=self.model.repetition_penalty, 
+                max_length=self.model.max_tokens
+                )
+        outputs = tokenizer.batch_decode(outputs[i][len(inputs[i]):] for i in range(len(outputs)))
+        # Setting stop tokens seems not working for Gemma, so we manually truncate the outputs
+        for i, completion in enumerate(outputs):
+            for stop_token in self.model.stop_tokens:
+                if stop_token in completion:
+                    outputs[i] = completion[:completion.index(stop_token)]
+
+        batch = [batch[i] for i in valid_indices]
+
+
+        # generrate/modificate field messages in batch
+        for i, item in enumerate(batch):
+            message = item["messages"]
+            #response = codes1[i] + codes2[i] + outputs[i].strip()
+            if outputs[i] is not None:
+                outputs[i] = re.search(r'```(.*?)```', outputs[i].strip(), re.DOTALL).group(1)
+
+                codes1=self._suggest_imports(codes=codes1)  # Suggest imports for code1
+                
+                response = "\n".join([
+                    textwrap.dedent(outputs[i]).strip()
+                ])
+
+                response = self.code_elaboration(response)   
+                
+                item['messages'] =  message+ [ # cange the messages field of the batch
+                        {   
+                            "role": "assistant",
+                            "content": response
+                        }
+                    ]
+                
+                if self.debug:
+                    print(f"Response for item {i}:\n{response}")
+                    print(f"\n-------------------------------------------------------\n\n")
+            
+        return batch
+
+
     # Process a batch of data using local vllm engine
     def process_batch(self, batch, llm, params, 
                       problem_def_column, code_column, code_column2, 
@@ -304,6 +398,10 @@ class TestGenerationManager:
          - problem_def_column: The name of the column containing problem definitions (default: "Problem")
          - code_column: The name of the column containing code solution (default: "Python Code")
         '''
+
+        if 'gen_code' in prompt_path: return self.procesprocess_batch_alternatives(batch, llm, params, code_column, prompt_path, tokenizer=tokenizer)
+        
+        
         # obtain problem definition
         problems_definitions = [item['messages'][0][problem_def_column] for item in batch] 
         local_prompts = []
@@ -527,7 +625,7 @@ class TestGenerationManager:
             for i in range(self.num_trials):
                 updated_dataset = self.generate_and_update(dataset=dataset, checkpoint_path=checkpoint_files[i], 
                                                            llm=llm, params=params, prompt_path= prompt_path, tokenizer=tokenizer,
-                                                           problem_def_column=probelm_def_column, code_column=code_colum, code_column2=code_column2)
+                                                           problem_def_column=probelm_def_column, code_column=code_column, code_column2=code_column2)
                 save_dataset(updated_dataset, saved_files[i], convert_to_jsonl=True)
 
                 # Optionally remove the checkpoint file after completion

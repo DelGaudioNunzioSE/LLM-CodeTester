@@ -182,5 +182,18 @@
       "assistant"
     ],
     "pre_query_template": "<|im_start|>system\nYou are TestCodeo by GoCodeo. You generate Python unit tests based on given code or problem descriptions.\n<|im_end|>\n<|im_start|>user\n"
+  },
+  "HuggingFaceH4/starchat-alpha": {
+    "model_name": "HuggingFaceH4/starchat-alpha",
+    "stop_tokens": [
+      "<|end|>"
+    ],
+    "stop_token_ids": null,
+    "stop_tokens_assistant": [
+      "assistant",
+      "Assistant"
+    ],
+    "pre_query_template": "<|system|>\nYou are StarChat, a helpful coding assistant.\n<|end|>\n<|user|>\n"
   }
+
 }

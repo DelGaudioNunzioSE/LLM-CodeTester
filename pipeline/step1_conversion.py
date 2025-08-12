@@ -34,7 +34,7 @@ class DatasetConverter():
         return text.strip()
     
 
-    def convert(self, input_path, output_path, problem_def_column,code_column,LLM_code_column, radomize=True):
+    def convert(self, input_path, output_path, problem_def_column, code_column, LLM_code_column, radomize=True):
         """
         Convert a CSV file to a JSONL file with specific columns and patterns removed.
         input_file: input_file: Path to the input CSV file.
