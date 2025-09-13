@@ -31,14 +31,19 @@ def load_dataset_from_file(filename):
     return data
 
 # Save dataset
-def save_dataset(data, filename, convert_to_jsonl=False):
+def save_dataset(data, filename, convert_to_jsonl=False, append: bool = False):
     if convert_to_jsonl:
         with open(filename, 'w',encoding="utf-8") as file:
             for obj in data:
                 file.write(json.dumps(obj) + '\n')
     else:
-        with open(filename, 'w',encoding="utf-8") as file:
-            json.dump(data, file, indent=2)
+        if append:
+              with open(filename, 'a', encoding="utf-8") as file:
+                file.seek(0, 2)
+                json.dump(data, file, indent=2)
+        else:
+            with open(filename, 'w',encoding="utf-8") as file:
+                json.dump(data, file, indent=2)
 
 
 # Function to make a single API request with exponential back-off

@@ -1,342 +1,275 @@
-import ast
-import textwrap
+
+import warnings
 import torch
 import os
 import re
-import argparse
 import copy
-import json
 from time import sleep, time
 from tqdm import tqdm
 from pipeline.utils import load_dataset_from_file, save_dataset, make_api_request_with_retry
-try:
-    from vllm import LLM, SamplingParams
-    VLLM_AVAILABLE = True
-except ImportError:
-    VLLM_AVAILABLE = False
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-import jedi
-import builtins
+
 ################################################
 
-
-class Model:
-    """
-    Class to hold model configuration parameters.
-    """
-    def __init__(self, model_nickname, quantization, dtype,tensor_parallel_size, gpu_memory_utilization, max_tokens, max_model_len, 
-                 temperature, top_p, repetition_penalty, model_config_path,
-                 stop_tokens, stop_token_ids):
-        """
-        model_nickname: Nickname of the model to use
-        quantization: what quantization to use (default: None)
-        dtype: Data type for the model (e.g., "bfloat16", "float16")
-        tensor_parallel_size: Number of GPUs to use for tensor parallelism
-        gpu_memory_utilization: GPU memory utilization (0.0 to 1.0)
-        max_tokens: Maximum number of tokens to generate
-        max_model_len: Maximum model length
-        temperature: Temperature for generation
-        top_p: Top-p sampling for generation
-        repetition_penalty: Repetition penalty for generation
-        model_config_path: Path to config file
-        stop_tokens: List of textual stop tokens
-        stop_token_ids: List of token ID stop tokens
-        """
-        self.model_nickname = model_nickname
-
-        if quantization is not None and quantization.lower() in ["4bit-nf4", "4bit-fp4", "8bit", "dont"]:
-            if quantization == "4bit-nf4":
-                self.quantization= BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_compute_dtype=dtype,
-                    bnb_4bit_use_double_quant=True
-                    )
-                    
-            elif quantization == "4bit-fp4":
-                self.quantization= BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_quant_type="fp4",
-                        bnb_4bit_compute_dtype=dtype,
-                        bnb_4bit_use_double_quant=True
-                    )
-                    
-            elif quantization == "8bit":
-                self.quantization= BitsAndBytesConfig(
-                load_in_8bit=True
-                )
-                    
-            elif quantization == "dont":
-                self.quantization= None
-
-            else:
-                raise ValueError(f"Invalid quantization type: {quantization}. Must be one of: ['4bit-nf4', '4bit-fp4', '8bit', 'dont']")
-
-        self.dtype = dtype
-        self.tensor_parallel_size = tensor_parallel_size
-        self.gpu_memory_utilization = gpu_memory_utilization
-        self.max_tokens = max_tokens
-        self.max_model_len = max_model_len
-        self.temperature = temperature
-        self.top_p = top_p
-        self.repetition_penalty = repetition_penalty
-        self.model_config_path = model_config_path
-        self.stop_tokens = stop_tokens
-        self.stop_token_ids = stop_token_ids
+from pipeline.step2_model import Model
 
 
 
 
-    def print_config(self):
-        """
-        Print the model configuration.
-        """
-        print(f"Model Nickname: {self.model_nickname}")
-        print(f"Quantization: {self.quantization}")
-        print(f"Dtype: {self.dtype}")
-        print(f"Tensor Parallel Size: {self.tensor_parallel_size}")
-        print(f"GPU Memory Utilization: {self.gpu_memory_utilization}")
-        print(f"Max Tokens: {self.max_tokens}")
-        print(f"Max Model Length: {self.max_model_len}")
-        print(f"Temperature: {self.temperature}")
-        print(f"Top P: {self.top_p}")
-        print(f"Repetition Penalty: {self.repetition_penalty}")
-        print(f"Model Config Path: {self.model_config_path}")
+#       MODEL PARAMETER ____________________________________________________________
+#       model_nickname:         Nickname of the model to use
+#       quantization:           what quantization to use (default: None)
+#       dtype:                  Data type for the model (e.g., "bfloat16", "float16")
+#       tensor_parallel_size:   Number of GPUs to use for tensor parallelism
+#       gpu_memory_utilization: GPU memory utilization (0.0 to 1.0)
+#       max_tokens:             Maximum number of tokens to generate
+#       max_model_len:          Maximum model length
+#       temperature:            Temperature for generation
+#       top_p:                  Top-p sampling for generation
+#       repetition_penalty:     Repetition penalty for generation
+#       model_config_path:      Path to config file
+#       stop_tokens:            List of textual stop tokens
+#       stop_token_ids:         List of token ID stop tokens
+#
+#       get_model:              self.model (the model from hugging face)
+#       get_tokenizer:          self.tokenizer (the tokenizer of the model)
 
         
 
 
 ################################################################################
 class TestGenerationManager:
-    def __init__(self,batch_size=128,checkpoint_every=20, 
-                 model_nickname="Qwen/Qwen2.5-Coder-7B-Instruct",
-                 quantization="8bit", api_url=None, api_key=None,
-                 device="0",dtype="float16", tensor_parallel_size=1, gpu_memory_utilization=0.95,  max_tokens=8000,
-                 max_model_len=4000, temperature=1.0, top_p=1.0, repetition_penalty=1.0, 
-                 num_trials=1, model_config_path="configs/model_configs.json", debug=False
+    def __init__(self,
+                 model : Model,
+                 batch_size=32,
+                 checkpoint_every=5, 
+                 num_trials: int = 4
                  ):
         '''
-        batch_size: Number of samples per batch (default: 128)
+        batch_size: Number of samples per batch (default: 32)
         checkpoint_every: Save checkpoint every n batches
-        model_nickname: model name
-        quantization: what quantization to use (default: None)
-        checkpoint_every: Save checkpoint every n batches (default: 20)
-        api_url: API URL for the model (if using API) (default: None)
-        api_key: API key for the model (if using API) (default: None)
-        device: Device to use for generation (default: "0")
-        dtype: Data type for the model (default: "bfloat16")
-        tensor_parallel_size: Number of GPUs to use for tensor parallelism. Only used for Llama 70B models.
-        gpu_memory_utilization: GPU memory utilization (default: 0.95) 
-        max_tokens: Maximum number of tokens to generate (default: 8000)
-        max_model_len: Maximum model length (default: 8000)
-        temperature: Temperature for generation (default: 1.0)
-        top_p: Top-p sampling for generation (default: 1.0)
-        repetition_penalty: Repetition penalty for generation (default: 1.0)
-        num_trials: Number of trials to run (default: 1)
-        model_config_path: Path to the model configuration file (default: "configs/model_configs.json")
+        model_nickname: model class reference
+
         '''
-        #model_nickname <-saved in model object
-        # self.quantization = quantization <-saved in model object
+
         self.batch_size = batch_size
         self.checkpoint_every = checkpoint_every
-        self.api_url = api_url
-        self.api_key = api_key
-        self.device = device
-        # self.dtype = dtype <-saved in model object
-        # self.tensor_parallel_size = tensor_parallel_size <-saved in model object
-        # self.gpu_memory_utilization = gpu_memory_utilization <-saved in model object
-        #max_tokens <-saved in model object
-        #max_model_len <-saved in model object
-        #temperature <-saved in model object
-        #top_p <-saved in model object
-        #repetition_penalty <-saved in model object
+
         self.num_trials = num_trials
-        #model_config_path <-saved in model object
-        self.debug = debug
-        valid_purpose = ["gen_inputs", "gen_tests"]
 
-        
-        valid_dtypes = ["float16", "bfloat16"]
-        if dtype not in valid_dtypes:
-            raise ValueError(f"Invalid dtype '{dtype}'. Must be one of: {valid_dtypes}")
+        self.model= model
 
-        if not (0.0 < gpu_memory_utilization <= 1.0):
-            raise ValueError("gpu_memory_utilization must be between 0.0 and 1.0")
-
-
-
-
-        
-        # model configurations
-        with open(model_config_path, "r",encoding="utf-8") as f:
-            self.model_configs = json.load(f)
-            self.model_config = self.model_configs[model_nickname]
-            temp_stop_tokens = self.model_config["stop_tokens"]
-            temp_stop_token_ids = self.model_config["stop_token_ids"]
-        
-        # model configuration object
-        self.model= Model(
-            model_nickname=model_nickname,
-            quantization=quantization,
-            dtype=dtype,
-            tensor_parallel_size=tensor_parallel_size,
-            gpu_memory_utilization=gpu_memory_utilization,
-            max_tokens=max_tokens,
-            max_model_len=max_model_len,
-            temperature=temperature,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-            model_config_path=model_config_path,
-            stop_tokens=temp_stop_tokens,
-            stop_token_ids=temp_stop_token_ids
-        )
-
-        if self.debug:
-            self.model.print_config()
+        return 
             
 
 
 
-    def prompt_elaboration(self, problem_def, code1, code2, prompt_path):
+    def prompt_elaboration(self, 
+                           problem_def : str, 
+                           code1: str, 
+                           prompt_path : str = "./pipeline/configs/prompts/get_code.md") -> str:
+        
+        '''Generate the prompt for the LLM'''
+
         with open(prompt_path, encoding="utf-8") as f:
             prompt_template = f.read()
 
-        return prompt_template.replace("{description}", problem_def).replace("{code1}", code1).replace("{code2}", code2)
+            prompt_elaborated = prompt_template.replace("{description}", problem_def).replace("{code1}", code1)
 
-
-    def code_elaboration(self, code):
-        try:
-            tree = ast.parse(code)
-        except SyntaxError as e:
-            print(f"[ERROR] Syntax error while parsing: {e}")
-            return code  # fallback
-
-        import_nodes = []
-        other_nodes = []
-
-        for node in tree.body:
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                import_nodes.append(node)
-            else:
-                other_nodes.append(node)
-
-        # Convert AST back to code (Python 3.9+)
-        try:
-            import_code = "\n".join([ast.unparse(n) for n in import_nodes])
-            other_code = "\n".join([ast.unparse(n) for n in other_nodes])
-        except Exception as e:
-            print(f"[ERROR] Could not unparse AST: {e}")
-            return code  # fallback
-
-        return import_code.strip() + "\n\n" + other_code.strip()
-
-
-
-    def _suggest_imports(self, codes: list[str]) -> list[str]:
-        updated_codes = []
-        for code in codes:
-            updated_codes.append( f"from typing import *\nfrom collections import *\nfrom math import *\n{code}")
-        return updated_codes
+        return  prompt_elaborated
 
 
 
 
-    def _rename_class(self, codes: list[str]) -> list[str]:
-        updated_codes = []
-        class_name_template = "{}_class"
-        class_prefixes = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth", "Tenth"]
 
-        for code in codes:
-            class_counter = 0
 
-            def replacer(match):
-                nonlocal class_counter
-                prefix = class_prefixes[class_counter] if class_counter < len(class_prefixes) else f"Class{class_counter+1}"
-                class_counter += 1
-                return f"class {class_name_template.format(prefix)}"
 
-            # Regex per trovare definizioni di classi
-            code = re.sub(r'class\s+(\w+)\s*:', replacer, code)
-            updated_codes.append(code)
 
-        return updated_codes
+
+
+    # For the code tester branch ##
+    #def code_elaboration(self, code):
+    #    try:
+    #        tree = ast.parse(code)
+    #    except SyntaxError as e:
+    #        print(f"[ERROR] Syntax error while parsing: {e}")
+    #        return code  # fallback
+
+    #    import_nodes = []
+    #    other_nodes = []
+
+    #    for node in tree.body:
+    #        if isinstance(node, (ast.Import, ast.ImportFrom)):
+    #            import_nodes.append(node)
+    #        else:
+    #            other_nodes.append(node)
+
+    #    # Convert AST back to code (Python 3.9+)
+    #    try:
+    #        import_code = "\n".join([ast.unparse(n) for n in import_nodes])
+    #        other_code = "\n".join([ast.unparse(n) for n in other_nodes])
+    #    except Exception as e:
+    #        print(f"[ERROR] Could not unparse AST: {e}")
+    #        return code  # fallback
+
+    #    return import_code.strip() + "\n\n" + other_code.strip()
+
+
+
+
+
+
+
+
+
+    # For the code tester branch ##
+    #def _suggest_imports(self, codes: list[str]) -> list[str]:
+    #    updated_codes = []
+    #    for code in codes:
+    #        updated_codes.append( f"from typing import *\nfrom collections import *\nfrom math import *\n{code}")
+    #    return updated_codes
+
+
+
+
+
+
+    # For the code tester branch ##
+    #def _rename_class(self, codes: list[str]) -> list[str]:
+    #    updated_codes = []
+    #    class_name_template = "{}_class"
+    #    class_prefixes = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth", "Tenth"]
+
+    #    for code in codes:
+    #        class_counter = 0
+
+    #        def replacer(match):
+    #            nonlocal class_counter
+    #            prefix = class_prefixes[class_counter] if class_counter < len(class_prefixes) else f"Class{class_counter+1}"
+    #            class_counter += 1
+    #            return f"class {class_name_template.format(prefix)}"
+
+    #        # Regex per trovare definizioni di classi
+    #        code = re.sub(r'class\s+(\w+)\s*:', replacer, code)
+    #       updated_codes.append(code)
+
+    #    return updated_codes
     
 
 
 
-    import ast
 
-    def _keep_only_functions_and_classes(self, codes: list[str]) -> list[str]:
-        updated_codes = []
-        for code in codes:
-            try:
-                # Parsing dell'albero sintattico
-                tree = ast.parse(code)
+    #import ast
 
-                # Filtra solo FunctionDef e ClassDef
-                filtered_nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))]
 
-                # Ricostruisci un modulo solo con quelle definizioni
-                new_module = ast.Module(body=filtered_nodes, type_ignores=[])
+    # For the code tester branch ##
+    #def _keep_only_functions_and_classes(self, codes: list[str]) -> list[str]:
+    #    updated_codes = []
+    #    for code in codes:
+    #        try:
+    #            tree = ast.parse(code)
 
-                # Ricostruisci il codice Python
-                updated_codes.append( ast.unparse(new_module) )
+    #            filtered_nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))]
 
-            except Exception as e:
-                return f"# Errore durante la rimozione del codice fuori da funzioni/classi:\n# {e}"
-        return updated_codes
+    #            new_module = ast.Module(body=filtered_nodes, type_ignores=[])
+
+    #            updated_codes.append( ast.unparse(new_module) )
+
+    #        except Exception as e:
+    #            return f"# Errore durante la rimozione del codice fuori da funzioni/classi:\n# {e}"
+    #    return updated_codes
             
 
 
 
-    def procesprocess_batch_alternatives(self, batch, llm, params, 
-                      code_column, 
-                      prompt_path,
-                      tokenizer=None):
+#
+#
+# Generated by step1_conversion
+#    item = {
+#         "messages":
+#              {
+#                self.role_key: "user",
+#                elf.problem_def_key: text_problem_def_column, 
+#                self.code_key: text_code_column,
+#                self.LLM_code_key: text_LLM_code_column
+#                                
+#                },
+#             "metadata": metadata
+#          }
+#
+#
+#
+
+    def process_batch(self, 
+                      batch_of_item: list, 
+                      llm_model : AutoModelForCausalLM, 
+                      tokenizer : AutoTokenizer,
+                      code_column: str = "code", 
+                      prompt_path : str = "./pipeline/configs/prompts/gen_code.md",
+                      
+                      ):
+        
         # obtain problem definition
         local_prompts = []
-        codes1 = [item['messages'][0][code_column] for item in batch]
+        # item is a dict of 2 dicts andhe the first one has inside a list within a dict
+        codes = [item['messages'][0]["code"] for item in batch_of_item]
         
-        for code1 in codes1:
+        for code1 in codes:
             if code1 is None: 
                 print("Code could not be parsed. Please check the code format.")
-                return batch
-            PROMPT = self.prompt_elaboration(problem_def=" ", code1=code1, code2=" ", prompt_path=prompt_path)
-            chat = [{"role": "user", "content": PROMPT}] 
-            template = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+                return []
+            
+
+
+            # elaboration for an Instruct model
+            PROMPT = self.prompt_elaboration(problem_def=" ", code1=code1, prompt_path=prompt_path)
+            chat = [
+                    {"role": "system", "content": "You are a LLM code generator. For every code snippet provided, first understand what it does, then rewrite it in a single markdown code block."},
+                    {"role": "user", "content": PROMPT},
+                ]
+
+            template = tokenizer.apply_chat_template(chat, tokenize=False)
+
             local_prompts.append(template)
 
-            if self.debug:
-                print(f" input:\n {template}")
-                print(f"\n-------------------------------------------------------\n\n")
 
 
 
+
+        ### check the max_model_len 
         # 1. Tokenizzo senza padding/troncamento per misurare la vera lunghezza
-        tokenized = tokenizer(local_prompts, padding=False, truncation=False, return_tensors=None)
+        #tokenized = tokenizer(local_prompts, padding=False, truncation=False, return_tensors=None, add_special_tokens=False)
 
         # 2. Calcolo la lunghezza di ogni prompt in token
-        input_lengths = [len(x) for x in tokenized["input_ids"]]
+        #input_lengths = [len(x) for x in tokenized["input_ids"]]
 
         # 3. Trovo gli indici validi
-        valid_indices = [i for i, l in enumerate(input_lengths) if l <= self.model.max_model_len]
-        invalid_indices = [i for i in range(len(local_prompts)) if i not in valid_indices]
-        if invalid_indices:
-            print(f"[INFO] Discarded {len(invalid_indices)} prompt too much long. batch idex: {invalid_indices}")
+        #valid_indices = [i for i, l in enumerate(input_lengths) if l <= self.model.max_model_len]
+        #invalid_indices = [i for i in range(len(local_prompts)) if i not in valid_indices]
+        #if invalid_indices:
+        #    print(f"[INFO] Discarded {len(invalid_indices)} prompt too much long. batch idex: {invalid_indices}")
 
         # 4. Filtro i local_prompts in base a questi indici
-        filtered_prompts = [local_prompts[i] for i in valid_indices]
+        #filtered_prompts = [local_prompts[i] for i in valid_indices]
 
-        if filtered_prompts == []:
-            print("[INFO] No valid prompts to process in this batch. Skipping...")
-            return batch
+        #if filtered_prompts == []:
+        #    warnings.warn("No valid prompts to process in this batch. Skipping...")
+        #    return []
+        ######
         
         # 5. Tokenizzo solo i prompt validi
-        inputs = tokenizer(filtered_prompts, return_tensors="pt", padding=True, truncation=True).to(torch.cuda.current_device()) 
+        inputs = tokenizer(local_prompts, 
+                           return_tensors="pt", 
+                           padding=True, 
+                           truncation=True).to(torch.cuda.current_device()) 
+
+
 
         gen_do_sample = False if self.model.temperature == 0 else True
-        outputs = llm.generate(**inputs,
+
+        # Generation
+        outputs = llm_model.generate(**inputs,
                 tokenizer=tokenizer, 
                 do_sample=gen_do_sample, 
                 temperature=self.model.temperature if gen_do_sample else None, # To avoid temperature` (=0) has to be a strictly positive float
@@ -344,164 +277,185 @@ class TestGenerationManager:
                 repetition_penalty=self.model.repetition_penalty, 
                 max_length=self.model.max_tokens
                 )
+        
+        # collect generation token -> str whitout input
         outputs = tokenizer.batch_decode(outputs[i][len(inputs[i]):] for i in range(len(outputs)))
-        # Setting stop tokens seems not working for Gemma, so we manually truncate the outputs
-        for i, completion in enumerate(outputs):
-            for stop_token in self.model.stop_tokens:
-                if stop_token in completion:
-                    outputs[i] = completion[:completion.index(stop_token)]
 
-        batch = [batch[i] for i in valid_indices]
+        # Setting stop tokens seems not working for some LLM, so we manually truncate the outputs
+        #for i, completion in enumerate(outputs):
+        #    for stop_token in self.model.stop_tokens:
+        #        if stop_token in completion:
+        #            outputs[i] = completion[:completion.index(stop_token)]
+
+        #batch_of_item_output = [batch_of_item[i] for i in valid_indices]
 
 
         # generrate/modificate field messages in batch
-        for i, item in enumerate(batch):
+        for i, item in enumerate(batch_of_item):
+            # obtaining the oringial message
             message = item["messages"]
-            #response = codes1[i] + codes2[i] + outputs[i].strip()
+
+            print(outputs[i] )
             if outputs[i] is not None:
-                outputs[i] = re.search(r'```(.*?)```', outputs[i].strip(), re.DOTALL).group(1)
-
-                codes1=self._suggest_imports(codes=codes1)  # Suggest imports for code1
+                outputs[i] = re.search(r'```(.*?)```', outputs[i].strip(), re.DOTALL)
+                if outputs[i] is not None:
+                    outputs[i]  = outputs[i] .group(1)
+                else:
+                    outputs[i] = None 
                 
-                response = "\n".join([
-                    textwrap.dedent(outputs[i]).strip()
-                ])
-
-                response = self.code_elaboration(response)   
-                
+                # NEW VALUE FOR ITEM
                 item['messages'] =  message+ [ # cange the messages field of the batch
                         {   
                             "role": "assistant",
-                            "content": response
+                            "content": outputs[i] 
                         }
                     ]
                 
-                if self.debug:
-                    print(f"Response for item {i}:\n{response}")
-                    print(f"\n-------------------------------------------------------\n\n")
             
-        return batch
+        return batch_of_item
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     # Process a batch of data using local vllm engine
-    def process_batch(self, batch, llm, params, 
-                      problem_def_column, code_column, code_column2, 
-                      prompt_path,
-                      tokenizer=None):
-        '''
-        Process a batch of data using local vllm engine or Hugging Face engine.
-        batch: List of messages to process (instructions and code)
-        llm: LLM used for generation
-        params: Sampling parameters for generation (optional, only needed for vllm engine)
-        tokenizer: Tokenizer object for encoding/decoding (optional, only needed for Hugging Face engine)
-        IMPORTANT:
-         - problem_def_column: The name of the column containing problem definitions (default: "Problem")
-         - code_column: The name of the column containing code solution (default: "Python Code")
-        '''
+    #def process_batch(self, batch, llm, params, 
+    #                  problem_def_column, code_column, code_column2, 
+    #                  prompt_path,
+    #                  tokenizer=None):
+    #    '''
+    #    Process a batch of data using local vllm engine or Hugging Face engine.
+    #    batch: List of messages to process (instructions and code)
+    #    llm: LLM used for generation
+    #    params: Sampling parameters for generation (optional, only needed for vllm engine)
+    #    tokenizer: Tokenizer object for encoding/decoding (optional, only needed for Hugging Face engine)
+    #    IMPORTANT:
+    #     - problem_def_column: The name of the column containing problem definitions (default: "Problem")
+    #     - code_column: The name of the column containing code solution (default: "Python Code")
+    #    '''
 
-        if 'gen_code' in prompt_path: return self.procesprocess_batch_alternatives(batch, llm, params, code_column, prompt_path, tokenizer=tokenizer)
+    #    if 'gen_code' in prompt_path: return self.procesprocess_batch_alternatives(batch, llm, params, code_column, prompt_path, tokenizer=tokenizer)
         
         
-        # obtain problem definition
-        problems_definitions = [item['messages'][0][problem_def_column] for item in batch] 
-        local_prompts = []
-        codes1 = [item['messages'][0][code_column] for item in batch]
-        codes1 = self._rename_class(codes=codes1)  # Rename class Solution to First_class
-        codes2 = [item['messages'][0][code_column2] for item in batch]
-        codes1 = self._keep_only_functions_and_classes(codes1)
-        codes2 = self._keep_only_functions_and_classes(codes2)
-        #codes1=self._suggest_imports(codes=codes1)  # Suggest imports for code1
-        #codes2=self._suggest_imports(codes=codes2)  # Suggest imports for code2
+    #    # obtain problem definition
+    #   problems_definitions = [item['messages'][0][problem_def_column] for item in batch] 
+    #    local_prompts = []
+    #    codes1 = [item['messages'][0][code_column] for item in batch]
+    #    codes1 = self._rename_class(codes=codes1)  # Rename class Solution to First_class
+    #    codes2 = [item['messages'][0][code_column2] for item in batch]
+    #    codes1 = self._keep_only_functions_and_classes(codes1)
+    #    codes2 = self._keep_only_functions_and_classes(codes2)
+    #    #codes1=self._suggest_imports(codes=codes1)  # Suggest imports for code1
+    #    #codes2=self._suggest_imports(codes=codes2)  # Suggest imports for code2
         
-        for problem_def, code1, code2 in zip(problems_definitions, codes1, codes2):
-            #code1 = self.code_elaboration(code1)
-            #code2 = self.code_elaboration(code2)
-            def1= 'def' in code1
-            def2= 'def' in code2
-            if code1 is None or code2 is None or def1 is False or def2 is False: 
-                print("Code could not be parsed. Please check the code format.")
-                return batch
-            PROMPT = self.prompt_elaboration(problem_def=problem_def, code1=code1, code2=code2, prompt_path=prompt_path)
-            chat = [{"role": "user", "content": PROMPT}] 
-            template = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
-            local_prompts.append(template)
+    #    for problem_def, code1, code2 in zip(problems_definitions, codes1, codes2):
+    #        #code1 = self.code_elaboration(code1)
+    #        #code2 = self.code_elaboration(code2)
+    #        def1= 'def' in code1
+    #        def2= 'def' in code2
+    #        if code1 is None or code2 is None or def1 is False or def2 is False: 
+    #            print("Code could not be parsed. Please check the code format.")
+    #            return batch
+    #        PROMPT = self.prompt_elaboration(problem_def=problem_def, code1=code1, code2=code2, prompt_path=prompt_path)
+    #        chat = [{"role": "user", "content": PROMPT}] 
+    #        template = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+    #        local_prompts.append(template)
 
-            if self.debug:
-                print(f" input:\n {template}")
-                print(f"\n-------------------------------------------------------\n\n")
+    #        if self.debug:
+    #            print(f" input:\n {template}")
+    #            print(f"\n-------------------------------------------------------\n\n")
 
 
 
-        # 1. Tokenizzo senza padding/troncamento per misurare la vera lunghezza
-        tokenized = tokenizer(local_prompts, padding=False, truncation=False, return_tensors=None)
+    #    # 1. Tokenizzo senza padding/troncamento per misurare la vera lunghezza
+    #    tokenized = tokenizer(local_prompts, padding=False, truncation=False, return_tensors=None)
 
-        # 2. Calcolo la lunghezza di ogni prompt in token
-        input_lengths = [len(x) for x in tokenized["input_ids"]]
+    #    # 2. Calcolo la lunghezza di ogni prompt in token
+    #    input_lengths = [len(x) for x in tokenized["input_ids"]]
 
-        # 3. Trovo gli indici validi
-        valid_indices = [i for i, l in enumerate(input_lengths) if l <= self.model.max_model_len]
-        invalid_indices = [i for i in range(len(local_prompts)) if i not in valid_indices]
-        if invalid_indices:
-            print(f"[INFO] Discarded {len(invalid_indices)} prompt too much long. batch idex: {invalid_indices}")
+    #    # 3. Trovo gli indici validi
+    #    valid_indices = [i for i, l in enumerate(input_lengths) if l <= self.model.max_model_len]
+    #    invalid_indices = [i for i in range(len(local_prompts)) if i not in valid_indices]
+    #    if invalid_indices:
+    #        print(f"[INFO] Discarded {len(invalid_indices)} prompt too much long. batch idex: {invalid_indices}")
 
-        # 4. Filtro i local_prompts in base a questi indici
-        filtered_prompts = [local_prompts[i] for i in valid_indices]
+    #    # 4. Filtro i local_prompts in base a questi indici
+    #    filtered_prompts = [local_prompts[i] for i in valid_indices]
 
-        if filtered_prompts == []:
-            print("[INFO] No valid prompts to process in this batch. Skipping...")
-            return batch
+    #    if filtered_prompts == []:
+    #        print("[INFO] No valid prompts to process in this batch. Skipping...")
+    #        return batch
         
-        # 5. Tokenizzo solo i prompt validi
-        inputs = tokenizer(filtered_prompts, return_tensors="pt", padding=True, truncation=True).to(torch.cuda.current_device()) 
+    #    # 5. Tokenizzo solo i prompt validi
+    #    inputs = tokenizer(filtered_prompts, return_tensors="pt", padding=True, truncation=True).to(torch.cuda.current_device()) 
 
-        gen_do_sample = False if self.model.temperature == 0 else True
-        outputs = llm.generate(**inputs,
-                tokenizer=tokenizer, 
-                do_sample=gen_do_sample, 
-                temperature=self.model.temperature if gen_do_sample else None, # To avoid temperature` (=0) has to be a strictly positive float
-                top_p=self.model.top_p,
-                repetition_penalty=self.model.repetition_penalty, 
-                max_length=self.model.max_tokens
-                )
-        outputs = tokenizer.batch_decode(outputs[i][len(inputs[i]):] for i in range(len(outputs)))
-        # Setting stop tokens seems not working for Gemma, so we manually truncate the outputs
-        for i, completion in enumerate(outputs):
-            for stop_token in self.model.stop_tokens:
-                if stop_token in completion:
-                    outputs[i] = completion[:completion.index(stop_token)]
+    #    gen_do_sample = False if self.model.temperature == 0 else True
+    #    outputs = llm.generate(**inputs,
+    #            tokenizer=tokenizer, 
+    #            do_sample=gen_do_sample, 
+    #            temperature=self.model.temperature if gen_do_sample else None, # To avoid temperature` (=0) has to be a strictly positive float
+    #            top_p=self.model.top_p,
+    #            repetition_penalty=self.model.repetition_penalty, 
+    #            max_length=self.model.max_tokens
+    #            )
+    #    outputs = tokenizer.batch_decode(outputs[i][len(inputs[i]):] for i in range(len(outputs)))
+    #    # Setting stop tokens seems not working for Gemma, so we manually truncate the outputs
+    #    for i, completion in enumerate(outputs):
+    #        for stop_token in self.model.stop_tokens:
+    #            if stop_token in completion:
+    #                outputs[i] = completion[:completion.index(stop_token)]
 
-        batch = [batch[i] for i in valid_indices]
+    #   batch = [batch[i] for i in valid_indices]
 
 
-        # generrate/modificate field messages in batch
-        for i, item in enumerate(batch):
-            message = item["messages"]
-            #response = codes1[i] + codes2[i] + outputs[i].strip()
-            if outputs[i] is not None:
-                outputs[i] = re.search(r'```python(.*?)```', outputs[i].strip(), re.DOTALL).group(1)
+    #    # generrate/modificate field messages in batch
+    #    for i, item in enumerate(batch):
+    #        message = item["messages"]
+    #        #response = codes1[i] + codes2[i] + outputs[i].strip()
+    #        if outputs[i] is not None:
+    #            outputs[i] = re.search(r'```python(.*?)```', outputs[i].strip(), re.DOTALL).group(1)
 
-                codes1=self._suggest_imports(codes=codes1)  # Suggest imports for code1
-                
-                response = "\n\n".join([
-                    textwrap.dedent(codes1[i]).strip(),
-                    textwrap.dedent(codes2[i]).strip(),
-                    textwrap.dedent(outputs[i]).strip()
-                ])
+    #            codes1=self._suggest_imports(codes=codes1)  # Suggest imports for code1
+    #            
+    #            response = "\n\n".join([
+    #                textwrap.dedent(codes1[i]).strip(),
+    #                textwrap.dedent(codes2[i]).strip(),
+    #                textwrap.dedent(outputs[i]).strip()
+    #            ])
 
-                response = self.code_elaboration(response)   
-                
-                item['messages'] =  message+ [ # cange the messages field of the batch
-                        {   
-                            "role": "assistant",
-                            "content": response
-                        }
-                    ]
-                
-                if self.debug:
-                    print(f"Response for item {i}:\n{response}")
-                    print(f"\n-------------------------------------------------------\n\n")
-            
-        return batch
+    #            response = self.code_elaboration(response)   
+    #            
+    #            item['messages'] =  message+ [ # cange the messages field of the batch
+    #                    {   
+    #                        "role": "assistant",
+    #                        "content": response
+    #                    }
+    #                ]
+    #            
+    #            if self.debug:
+    #                print(f"Response for item {i}:\n{response}")
+    #                print(f"\n-------------------------------------------------------\n\n")
+    #        
+    #    return batch
+
+
+
+
+
+
+
+
+
+
 
 
     def number_of_batches(self, dataset,dataset_done=0):
@@ -514,9 +468,24 @@ class TestGenerationManager:
 
 
 
+
+
+
+
+
+
+
+
+
     # Generate outputs, update dataset in batches, and overwrite checkpoint
-    def generate_and_update(self, dataset, checkpoint_path, problem_def_column,
-                            code_column,code_column2, prompt_path, llm=None, params=None, tokenizer=None):
+    def generate_and_update(self, 
+                            llm : AutoModelForCausalLM, 
+                            tokenizer : AutoTokenizer,
+                            dataset : list, 
+                            checkpoint_path : str, 
+                            problem_def_column : str,
+                            code_column : str = "code",
+                            prompt_path: str = "./pipeline/configs/prompts/gen_code.md") -> str:
         '''
         Generate outputs for the dataset in batches and update the dataset.
         dataset: List of dictionaries containing code and instructions
@@ -551,6 +520,8 @@ class TestGenerationManager:
             num_batches = self.number_of_batches(dataset=processed_dataset, dataset_done=last_checkpoint_idx)
 
             print(f"Remaining number of batches: {num_batches}")
+
+
         else:
             last_checkpoint_idx = 0
             # Calculate total number of batches
@@ -563,22 +534,29 @@ class TestGenerationManager:
             start_idx = i * self.batch_size + last_checkpoint_idx
             end_idx = min((i + 1) * self.batch_size + last_checkpoint_idx, len(processed_dataset))
             batch = processed_dataset[start_idx:end_idx]
-            batch = self.process_batch(batch=batch, llm=llm, params=params, prompt_path=prompt_path, tokenizer=tokenizer,
-                                       problem_def_column=problem_def_column, code_column=code_column, code_column2=code_column2)
+            batch = self.process_batch(batch_of_item=batch, 
+                                    llm_model=llm, 
+                                    prompt_path=prompt_path, 
+                                    tokenizer=tokenizer,
+                                    code_column=code_column)
             
             processed_dataset[start_idx:end_idx] = batch
             # Overwrite the same checkpoint file after serveral batches
             if i % self.checkpoint_every == 0:
-                save_dataset(processed_dataset[:end_idx], checkpoint_path, convert_to_jsonl=True)
+                save_dataset(processed_dataset[:end_idx], checkpoint_path, convert_to_jsonl=True, append= False)
                 print(f"Dataset checkpoint saved after batch {i + 1}.")
 
         return processed_dataset
 
 
 
+
+
+
+
     # Main function to control workflow
     def run(self,input_path,output_path,checkpoint_path,prompt_path,
-            probelm_def_column, code_column, code_column2):
+            probelm_def_column, code_column):
 
         # Setting ingput and output paths
                 # Create different output folders for different trials
@@ -595,27 +573,22 @@ class TestGenerationManager:
         
         # HF-LLM engine
         print("Start Hugging Face engine...")
-        params = None
-        #
+
 
         # Load the model and tokenizer
-        llm = AutoModelForCausalLM.from_pretrained(
-            self.model.model_nickname,
-            device_map={'':torch.cuda.current_device()},
-            torch_dtype=self.model.dtype,
-            quantization_config=self.model.quantization, # qunatization
-        )
+        llm = self.model.get_llm()
+
         torch.cuda.empty_cache()
         print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
         
-        tokenizer = AutoTokenizer.from_pretrained(self.model.model_nickname)
+        tokenizer = self.model.get_tokenizer()
         
 
         if self.num_trials == 1:
             updated_dataset = self.generate_and_update(dataset=dataset, checkpoint_path=checkpoint_file, 
-                                                       llm=llm, params=params, prompt_path=prompt_path, tokenizer=tokenizer,
-                                                       problem_def_column=probelm_def_column, code_column=code_column, code_column2=code_column2)
+                                                       llm=llm, prompt_path=prompt_path, tokenizer=tokenizer,
+                                                       problem_def_column=probelm_def_column, code_column=code_column)
             save_dataset(updated_dataset, saved_file, convert_to_jsonl=True)
 
             # Optionally remove the checkpoint file after completion
@@ -624,10 +597,10 @@ class TestGenerationManager:
         else:
             for i in range(self.num_trials):
                 updated_dataset = self.generate_and_update(dataset=dataset, checkpoint_path=checkpoint_files[i], 
-                                                           llm=llm, params=params, prompt_path= prompt_path, tokenizer=tokenizer,
-                                                           problem_def_column=probelm_def_column, code_column=code_column, code_column2=code_column2)
+                                                           llm=llm, prompt_path= prompt_path, tokenizer=tokenizer,
+                                                           problem_def_column=probelm_def_column, code_column=code_column)
                 save_dataset(updated_dataset, saved_files[i], convert_to_jsonl=True)
 
                 # Optionally remove the checkpoint file after completion
                 os.remove(checkpoint_files[i])
-                print(f"Dataset for trial {i} saved. Checkpoint {i} removed.")
+                print(f"Dataset for trial {i} saved. Checkpoint {i} removed.")#
