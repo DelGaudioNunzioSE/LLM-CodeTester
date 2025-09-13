@@ -36,6 +36,11 @@ class DatasetConverter():
         self.problem_def_key = problem_def_key
         self.code_key = code_key
         self.LLM_code_key = LLM_code_key
+        self.len_max = len_max
+
+
+
+
 
 
 
